@@ -115,7 +115,7 @@ if run_button:
     cafes = []
     n = len(google_results)
 
-    with BookyScraper(driver_path) as scraper:
+    with BookyScraper() as scraper:
         for i, entry in enumerate(google_results, 1):
             name = entry.get("name", "Unknown")
             pct  = 10 + int(80 * i / n)

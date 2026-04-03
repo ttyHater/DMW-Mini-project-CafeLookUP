@@ -1,0 +1,9 @@
+2026-04-03 16:03:28,808 [INFO] Page 1: fetched 20 cafes (total 20)
+2026-04-03 16:06:22,182 [INFO] Page 1: fetched 20 cafes (total 20)
+2026-04-03 16:06:22,213 [INFO] ====== WebDriver manager ======
+2026-04-03 16:06:23,960 [INFO] Get LATEST chromedriver version for google-chrome
+2026-04-03 16:06:25,571 [INFO] About to download new driver from https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_win32.zip
+2026-04-03 16:06:26,989 [INFO] Driver downloading response is 200
+2026-04-03 16:06:42,195 [INFO] Get LATEST chromedriver version for google-chrome
+2026-04-03 16:06:44,680 [INFO] Get LATEST chromedriver version for google-chrome
+2026-04-03 16:06:46,940 [INFO] Driver has been saved in cache [C:\Users\Tyrese\.wdm\drivers\chromedriver\win64\114.0.5735.90]
