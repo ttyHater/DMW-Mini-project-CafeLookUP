@@ -8,18 +8,17 @@ import re
 import logging
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
-from urllib.parse import quote
 from dotenv import load_dotenv
 from openai import OpenAI
 from selenium import webdriver
-from selenium.webdriver.edge.service import Service
-from selenium.webdriver.edge.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.edge.webdriver import WebDriver
+from webdriver_manager.chrome import ChromeDriverManager
 
 # =============================
 # LOGGING
@@ -79,7 +78,7 @@ class Cafe:
     max_price: Optional[int] = None
     reviews: List[Review] = field(default_factory=list)
     tambayable: bool = False
-    tambay_score: float = 0.0   # ← composite 0–10 score
+    tambay_score: float = 0.0
     reason: str = ""
     features: Dict = field(default_factory=lambda: {
         "has_wifi": False, "is_quiet": False, "has_outlets": False,
@@ -92,8 +91,7 @@ class Cafe:
 def with_retries(fn, retries=3, delay=2, fallback=None, no_retry=()):
     """
     Call fn(); retry on Exception up to `retries` times.
-    `no_retry` is a tuple of exception types that should NOT be retried
-    (e.g. ValueError when a cafe is confirmed not listed on Booky).
+    `no_retry` is a tuple of exception types that should NOT be retried.
     """
     for attempt in range(1, retries + 1):
         try:
@@ -113,7 +111,6 @@ def compute_tambay_score(features: Dict) -> float:
     """
     Weighted boolean score: each True feature contributes its full weight.
     Sum of all weights = 1.0, multiplied by 10 gives a 0–10 scale.
-    e.g. has_wifi(T) + study_viable(T) + has_outlets(T) = 0.55 → 5.5/10
     """
     score = sum(TAMBAY_WEIGHTS.get(k, 0) for k, v in features.items() if v)
     return round(score * 10, 2)
@@ -122,7 +119,7 @@ def compute_tambay_score(features: Dict) -> float:
 # SELENIUM BOOKY SCRAPER
 # =============================
 class BookyScraper:
-    def __init__(self, driver_path: str):
+    def __init__(self):
         options = Options()
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
@@ -134,8 +131,9 @@ class BookyScraper:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--no-sandbox")
 
-        service = Service(driver_path)
-        self.driver: WebDriver = WebDriver(service=service, options=options)
+        # webdriver-manager auto-downloads the correct chromedriver version
+        service = Service(ChromeDriverManager().install())
+        self.driver = webdriver.Chrome(service=service, options=options)
         self.wait = WebDriverWait(self.driver, 15)
         self.driver.get("https://booky.ph/")
 
@@ -154,11 +152,10 @@ class BookyScraper:
         except (ValueError, TypeError):
             return None
 
-    # Selector groups: try each in order — handles Booky layout changes gracefully
     RESULT_SELECTORS = [
-        ".search-result-tile-container",   # primary
-        ".search-results .item",            # fallback A
-        "[data-cy='search-result']",        # fallback B
+        ".search-result-tile-container",
+        ".search-results .item",
+        "[data-cy='search-result']",
     ]
     MENU_BTN_SELECTORS = [
         ".listing__menu-cta",
@@ -170,8 +167,6 @@ class BookyScraper:
         ".menu-item__price",
         ".price",
     ]
-
-    # Selectors that indicate Booky found nothing — bail out immediately if seen
     NO_RESULTS_SELECTORS = [
         ".empty-state",
         ".no-results",
@@ -182,16 +177,13 @@ class BookyScraper:
     def _wait_for_any(self, selectors: list, timeout: int = 15):
         """
         Poll until one of `selectors` appears OR a no-results indicator is found.
-        Raises a descriptive ValueError (not TimeoutException) on no-results so
-        with_retries does NOT retry — the cafe simply isn't on Booky.
+        Raises ValueError on no-results so with_retries does NOT retry.
         """
         end = time.time() + timeout
         while time.time() < end:
-            # Fast-fail: listing not on Booky
             for empty_sel in self.NO_RESULTS_SELECTORS:
                 if self.driver.find_elements(By.CSS_SELECTOR, empty_sel):
                     raise ValueError(f"Booky returned no results ('{empty_sel}' found)")
-
             for sel in selectors:
                 if self.driver.find_elements(By.CSS_SELECTOR, sel):
                     return self.driver.find_elements(By.CSS_SELECTOR, sel)[0]
@@ -204,10 +196,7 @@ class BookyScraper:
 
     @staticmethod
     def _clean_query(query: str) -> str:
-        """
-        Strip location suffixes appended by Google (e.g. 'Odd Cafe | Makati' -> 'Odd Cafe').
-        Booky's search chokes on pipe characters and location noise.
-        """
+        """Strip location suffixes appended by Google (e.g. 'Odd Cafe | Makati' -> 'Odd Cafe')."""
         for sep in ["|", ",", "-", "–"]:
             if sep in query:
                 query = query.split(sep)[0]
@@ -218,8 +207,6 @@ class BookyScraper:
         log.info(f"  Booky search: '{clean}' (original: '{query}')")
 
         def _scrape():
-            # Navigate to Booky and use the search box directly —
-            # URL params alone don't trigger the SPA's search logic
             self.driver.get("https://booky.ph/")
             WebDriverWait(self.driver, 10).until(
                 lambda d: d.execute_script("return document.readyState") == "complete"
@@ -236,7 +223,6 @@ class BookyScraper:
             search_box.send_keys(clean)
             search_box.send_keys(Keys.RETURN)
 
-            # SPA needs time to fetch + render results — wait for a result tile
             first_result = self._wait_for_any(self.RESULT_SELECTORS, timeout=20)
             self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", first_result)
             first_result.click()
@@ -281,7 +267,7 @@ def search_google_cafes(max_cafes: int = MAX_CAFES) -> List[Dict]:
         params = {"query": f"{SEARCH_QUERY} in {SEARCH_LOCATION}", "key": GOOGLE_API_KEY}
         if next_page:
             params["pagetoken"] = next_page
-            time.sleep(2)   # required by Google before using a page token
+            time.sleep(2)
 
         def _fetch():
             return requests.get(TEXT_SEARCH_URL, params=params, timeout=10).json()
@@ -345,7 +331,6 @@ def init_db(conn: sqlite3.Connection):
             tambayable   INTEGER,
             tambay_score REAL,
             reason       TEXT,
-            -- Feature columns stored as booleans (0/1)
             has_wifi         INTEGER,
             has_outlets      INTEGER,
             is_quiet         INTEGER,
@@ -421,7 +406,7 @@ def classify_cafe_with_llm(cafe: Cafe):
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": prompt},
             ],
-            temperature=0.2,    # low temp → consistent scoring
+            temperature=0.2,
         )
         return json.loads(res.choices[0].message.content)
 
@@ -456,8 +441,6 @@ def build_dataframe(cafes: List[Cafe]) -> pd.DataFrame:
             **c.features,
         })
     df = pd.DataFrame(rows)
-
-    # Normalise tambay_score 0–10 → 0–100 for readability
     df["tambay_pct"] = (df["tambay_score"] / 10 * 100).round(1)
     return df
 
@@ -475,7 +458,7 @@ def print_summary(df: pd.DataFrame):
     log.info(f"\n{top.to_string(index=False)}")
 
     log.info("\n--- Feature Correlations with Tambay Score ---")
-    feature_cols = list(TAMBAY_WEIGHTS.keys())  # boolean features
+    feature_cols = list(TAMBAY_WEIGHTS.keys())
     corr = df[feature_cols + ["tambay_score"]].corr()["tambay_score"].drop("tambay_score")
     log.info(f"\n{corr.sort_values(ascending=False).to_string()}")
 
@@ -490,7 +473,7 @@ def export_results(df: pd.DataFrame, path: str = "cafes_results.csv"):
 # =============================
 # PIPELINE
 # =============================
-def run_pipeline(driver_path: str) -> pd.DataFrame:
+def run_pipeline() -> pd.DataFrame:
     conn = sqlite3.connect(DATABASE_FILE)
     init_db(conn)
 
@@ -499,7 +482,7 @@ def run_pipeline(driver_path: str) -> pd.DataFrame:
 
     cafes: List[Cafe] = []
 
-    with BookyScraper(driver_path) as scraper:
+    with BookyScraper() as scraper:
         for i, entry in enumerate(google_results, 1):
             name = entry.get("name", "Unknown")
             log.info(f"[{i}/{len(google_results)}] Processing: {name}")
@@ -521,5 +504,4 @@ def run_pipeline(driver_path: str) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    DRIVER_PATH = r"msedgedriver.exe"
-    df = run_pipeline(DRIVER_PATH)
+    df = run_pipeline()
